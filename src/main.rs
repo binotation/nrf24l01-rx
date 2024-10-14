@@ -8,7 +8,7 @@ use cortex_m_rt::entry;
 use heapless::{spsc::Queue, Vec};
 use nrf24l01_commands::{commands, commands::Command, registers};
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-use stm32u5::stm32u575::{interrupt, Interrupt, Peripherals, GPIOA, SPI1, USART2};
+use stm32u5::stm32u575::{interrupt, Interrupt, Peripherals, EXTI, GPIOA, SPI1, USART2};
 
 const RX_ADDR: u64 = 0xA2891FFF6A;
 
@@ -33,6 +33,7 @@ impl<P> SyncUnsafeCell<P> {
 unsafe impl Sync for SyncUnsafeCell<GPIOA> {}
 unsafe impl Sync for SyncUnsafeCell<USART2> {}
 unsafe impl Sync for SyncUnsafeCell<SPI1> {}
+unsafe impl Sync for SyncUnsafeCell<EXTI> {}
 unsafe impl Sync for SyncUnsafeCell<Queue<u8, 64>> {}
 unsafe impl Sync for SyncUnsafeCell<Queue<u16, 64>> {}
 unsafe impl Sync for SyncUnsafeCell<Queue<Vec<u8, 64>, 16>> {}
@@ -40,6 +41,7 @@ unsafe impl Sync for SyncUnsafeCell<Queue<Vec<u8, 64>, 16>> {}
 static GPIOA_PERIPHERAL: SyncUnsafeCell<GPIOA> = SyncUnsafeCell::new();
 static USART2_PERIPHERAL: SyncUnsafeCell<USART2> = SyncUnsafeCell::new();
 static SPI1_PERIPHERAL: SyncUnsafeCell<SPI1> = SyncUnsafeCell::new();
+static EXTI_PERIPHERAL: SyncUnsafeCell<EXTI> = SyncUnsafeCell::new();
 /// Bytes received over SPI1
 static RX_BUFFER: SyncUnsafeCell<Queue<u16, 64>> = SyncUnsafeCell::new();
 
@@ -207,6 +209,31 @@ fn USART2() {
     }
 }
 
+#[interrupt]
+fn EXTI1() {
+    let exti = EXTI_PERIPHERAL.get();
+    let usart2 = USART2_PERIPHERAL.get();
+    let spi1 = SPI1_PERIPHERAL.get();
+    let rx_buffer = RX_BUFFER.get();
+    if exti.fpr1().read().fpif1().bit_is_set() {
+        // read payload
+        send_command(
+            &commands::ReadRxPayload::<32>::bytes(),
+            spi1,
+            usart2,
+            rx_buffer,
+        );
+        // Clear RX_DR flag
+        send_command(
+            &commands::WriteRegister(registers::Status::new().with_rx_dr(true)).bytes(),
+            spi1,
+            usart2,
+            rx_buffer,
+        );
+        exti.fpr1().write(|w| w.fpif1().clear_bit_by_one());
+    }
+}
+
 #[entry]
 fn main() -> ! {
     // Device defaults to 4MHz clock
@@ -293,14 +320,20 @@ fn main() -> ! {
             .set_bit()
     });
 
+    // Set up EXTI line 1 interrupt for A1
+    dp.EXTI.exticr1().write(|w| w.exti1().pa());
+    dp.EXTI.ftsr1().write(|w| w.ft1().set_bit());
+    dp.EXTI.imr1().write(|w| w.im1().set_bit());
+
     RX_BUFFER.set(Queue::new());
     GPIOA_PERIPHERAL.set(dp.GPIOA);
     SPI1_PERIPHERAL.set(dp.SPI1);
     USART2_PERIPHERAL.set(dp.USART2);
+    EXTI_PERIPHERAL.set(dp.EXTI);
     unsafe {
         // Unmask NVIC global interrupts
-        // cortex_m::peripheral::NVIC::unmask(Interrupt::SPI1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::USART2);
+        cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI1);
     }
 
     // Send initial commands
