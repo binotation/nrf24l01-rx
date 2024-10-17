@@ -23,6 +23,7 @@ impl<P> SyncUnsafeCell<P> {
         unsafe { *self.0.get() = Some(inner) };
     }
 
+    #[allow(clippy::mut_from_ref)]
     fn get(&self) -> &mut P {
         unsafe { &mut *self.0.get() }.as_mut().unwrap()
     }
@@ -115,7 +116,7 @@ fn USART2() {
                 // b
                 // Read RF_CH
                 send_command(
-                    &commands::ReadRegister::<registers::RfCh>::bytes(),
+                    &commands::RRegister::<registers::RfCh>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -125,7 +126,7 @@ fn USART2() {
                 // c
                 // Read RX Addr P0
                 send_command(
-                    &commands::ReadRegister::<registers::RxAddrP0>::bytes(),
+                    &commands::RRegister::<registers::RxAddrP0<5>>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -135,7 +136,7 @@ fn USART2() {
                 // d
                 // Read Config
                 send_command(
-                    &commands::ReadRegister::<registers::Config>::bytes(),
+                    &commands::RRegister::<registers::Config>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -145,7 +146,7 @@ fn USART2() {
                 // e
                 // Clear RX_DR flag
                 send_command(
-                    &commands::WriteRegister(registers::Status::new().with_rx_dr(true)).bytes(),
+                    &commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -155,7 +156,7 @@ fn USART2() {
                 // f
                 // Read pipe 0 payload width
                 send_command(
-                    &commands::ReadRegister::<registers::RxPwP0>::bytes(),
+                    &commands::RRegister::<registers::RxPwP0>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -165,7 +166,7 @@ fn USART2() {
                 // g
                 // Read FifoStatus
                 send_command(
-                    &commands::ReadRegister::<registers::FifoStatus>::bytes(),
+                    &commands::RRegister::<registers::FifoStatus>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -185,7 +186,7 @@ fn USART2() {
                 // j
                 // read payload
                 send_command(
-                    &commands::ReadRxPayload::<32>::bytes(),
+                    &commands::RRxPayload::<32>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -195,7 +196,7 @@ fn USART2() {
                 // k
                 // carrier detect
                 send_command(
-                    &commands::ReadRegister::<registers::Cd>::bytes(),
+                    &commands::RRegister::<registers::Cd>::bytes(),
                     spi1,
                     usart2,
                     rx_buffer,
@@ -218,14 +219,14 @@ fn EXTI1() {
     if exti.fpr1().read().fpif1().bit_is_set() {
         // read payload
         send_command(
-            &commands::ReadRxPayload::<32>::bytes(),
+            &commands::RRxPayload::<32>::bytes(),
             spi1,
             usart2,
             rx_buffer,
         );
         // Clear RX_DR flag
         send_command(
-            &commands::WriteRegister(registers::Status::new().with_rx_dr(true)).bytes(),
+            &commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes(),
             spi1,
             usart2,
             rx_buffer,
@@ -343,43 +344,43 @@ fn main() -> ! {
     let rx_buffer = RX_BUFFER.get();
 
     send_command(
-        &commands::WriteRegister(registers::RfCh::new().with_rf_ch(110)).bytes(),
+        &commands::WRegister(registers::RfCh::new().with_rf_ch(110)).bytes(),
         spi1,
         usart2,
         rx_buffer,
     );
     send_command(
-        &commands::ReadRegister::<registers::RfCh>::bytes(),
+        &commands::RRegister::<registers::RfCh>::bytes(),
         spi1,
         usart2,
         rx_buffer,
     );
     send_command(
-        &commands::WriteRegister(registers::RxAddrP0::new().with_rx_addr_p0(RX_ADDR)).bytes(),
+        &commands::WRegister(registers::RxAddrP0::<5>::new().with_rx_addr_p0(RX_ADDR)).bytes(),
         spi1,
         usart2,
         rx_buffer,
     );
     send_command(
-        &commands::ReadRegister::<registers::RxAddrP0>::bytes(),
+        &commands::RRegister::<registers::RxAddrP0<5>>::bytes(),
         spi1,
         usart2,
         rx_buffer,
     );
     send_command(
-        &commands::WriteRegister(registers::RxPwP0::new().with_rx_pw_p0(32)).bytes(),
+        &commands::WRegister(registers::RxPwP0::new().with_rx_pw_p0(32)).bytes(),
         spi1,
         usart2,
         rx_buffer,
     );
     send_command(
-        &commands::ReadRegister::<registers::RxPwP0>::bytes(),
+        &commands::RRegister::<registers::RxPwP0>::bytes(),
         spi1,
         usart2,
         rx_buffer,
     );
     send_command(
-        &commands::WriteRegister(
+        &commands::WRegister(
             registers::Config::new()
                 .with_prim_rx(true)
                 .with_pwr_up(true)
@@ -392,7 +393,7 @@ fn main() -> ! {
         rx_buffer,
     );
     send_command(
-        &commands::ReadRegister::<registers::Config>::bytes(),
+        &commands::RRegister::<registers::Config>::bytes(),
         spi1,
         usart2,
         rx_buffer,
