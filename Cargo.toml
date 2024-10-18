@@ -11,6 +11,7 @@ cortex-m-rt = "0.7.3"
 # cortex-m-semihosting = "0.3.3"
 panic-semihosting = "0.6.0"
 heapless = "0.8.0"
+nrf24l01-commands = "1.0.2"
 
 # Uncomment for the panic example.
 # panic-itm = "0.4.1"
@@ -21,9 +22,6 @@ heapless = "0.8.0"
 [dependencies.stm32u5]
 path = "../../stm32-rs-nightlies/stm32u5"
 features = ["stm32u575"]
-
-[dependencies.nrf24l01-commands]
-path = "../../god-is-a-crab/nrf24l01-commands"
 
 # this lets you use `cargo fix`!
 [[bin]]
