@@ -18,12 +18,11 @@ const USART2_TDR: u32 = 0x4000_4428;
 // nRF24L01 command byte sequences
 // const NOP: [u8; 1] = commands::Nop::bytes();
 const W_RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(110)).bytes();
-const R_RF_CH: [u8; 2] = commands::RRegister::<registers::RfCh>::bytes();
+const W_RF_SETUP: [u8; 2] =
+    commands::WRegister(registers::RfSetup::new().with_rf_dr(false)).bytes();
 const W_RX_ADDR_P0: [u8; 6] =
     commands::WRegister(registers::RxAddrP0::<5>::new().with_rx_addr_p0(RX_ADDR)).bytes();
-const R_RX_ADDR_P0: [u8; 6] = commands::RRegister::<registers::RxAddrP0<5>>::bytes();
 const W_RX_PW_P0: [u8; 2] = commands::WRegister(registers::RxPwP0::new().with_rx_pw_p0(32)).bytes();
-const R_RX_PW_P0: [u8; 2] = commands::RRegister::<registers::RxPwP0>::bytes();
 const W_CONFIG: [u8; 2] = commands::WRegister(
     registers::Config::new()
         .with_prim_rx(true)
@@ -32,7 +31,6 @@ const W_CONFIG: [u8; 2] = commands::WRegister(
         .with_mask_tx_ds(true),
 )
 .bytes();
-const R_CONFIG: [u8; 2] = commands::RRegister::<registers::Config>::bytes();
 const R_RX_PAYLOAD: [u8; 33] = commands::RRxPayload::<32>::bytes();
 const W_RESET_RX_DR: [u8; 2] =
     commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes();
@@ -112,13 +110,15 @@ fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
     gpdma1.c1cr().modify(|_, w| w.en().set_bit());
 
     // USART2 TX: Re-configure source address, transfer size
-    #[allow(static_mut_refs)]
-    gpdma1
-        .c2sar()
-        .write(|w| unsafe { w.bits(SPI1_RX_BUFFER.as_ptr() as u32) });
-    gpdma1
-        .c2br1()
-        .write(|w| unsafe { w.bndt().bits(transfer_size) });
+    if command == R_RX_PAYLOAD {
+        #[allow(static_mut_refs)]
+        gpdma1
+            .c2sar()
+            .write(|w| unsafe { w.bits(SPI1_RX_BUFFER[1..].as_ptr() as u32) });
+        gpdma1
+            .c2br1()
+            .write(|w| unsafe { w.bndt().bits(transfer_size) });
+    }
 
     // SPI1 TX: Re-configure destination address, transfer size
     gpdma1
@@ -135,93 +135,6 @@ fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
     spi1.spi_cr1().modify(|_, w| w.spe().set_bit());
     spi1.spi_cr1().modify(|_, w| w.cstart().set_bit());
 }
-
-// #[interrupt]
-// fn USART2() {
-//     let usart2 = USART2_PERIPHERAL.get();
-//     let spi1 = SPI1_PERIPHERAL.get();
-//     let gpioa = GPIOA_PERIPHERAL.get();
-
-//     // Dequeue bytes off rx buffer and transmit over USART2
-//     if usart2.isr_disabled().read().txfnf().bit_is_set() {
-//         if let Some(byte) = rx_buffer.dequeue() {
-//             usart2.tdr().write(|w| unsafe { w.tdr().bits(byte) });
-//             if rx_buffer.is_empty() {
-//                 usart2.cr1_disabled().modify(|_, w| w.txfnfie().clear_bit());
-//             }
-//         } else {
-//             usart2.cr1_disabled().modify(|_, w| w.txfnfie().clear_bit());
-//         }
-//     }
-
-//     // Read incoming bytes from USART2 run nRF24L01 command
-//     if usart2.isr_disabled().read().rxfne().bit_is_set() {
-//         // Read data, this clears RXNE
-//         let received_byte = usart2.rdr().read().rdr().bits();
-
-//         match received_byte {
-//             97 => {
-//                 // a
-//                 // NOP
-//                 send_command(&[commands::Nop::WORD], spi1, usart2, rx_buffer);
-//             }
-//             101 => {
-//                 // e
-//                 // Clear RX_DR flag
-//                 send_command(
-//                     &commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             103 => {
-//                 // g
-//                 // Read FifoStatus
-//                 send_command(
-//                     &commands::RRegister::<registers::FifoStatus>::bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             104 => {
-//                 // h
-//                 // CE=1
-//                 gpioa.bsrr().write(|w| w.bs0().set_bit());
-//             }
-//             105 => {
-//                 // i
-//                 // CE=0
-//                 gpioa.bsrr().write(|w| w.br0().set_bit());
-//             }
-//             106 => {
-//                 // j
-//                 // read payload
-//                 send_command(
-//                     &commands::RRxPayload::<32>::bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             107 => {
-//                 // k
-//                 // carrier detect
-//                 send_command(
-//                     &commands::RRegister::<registers::Cd>::bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             _ => (),
-//         }
-//     }
-//     if usart2.isr_disabled().read().ore().bit_is_set() {
-//         usart2.icr().write(|w| w.orecf().set_bit());
-//     }
-// }
 
 #[interrupt]
 fn EXTI1() {
@@ -244,6 +157,7 @@ fn GPDMA1_CH1() {
     let gpdma1 = GPDMA1_PERIPHERAL.get();
     let spi1 = SPI1_PERIPHERAL.get();
     let usart2 = USART2_PERIPHERAL.get();
+    let commands = COMMANDS.get();
 
     if gpdma1.c1sr().read().tcf().bit_is_set() {
         gpdma1.c1fcr().write(|w| w.tcf().set_bit());
@@ -252,10 +166,14 @@ fn GPDMA1_CH1() {
         spi1.spi_ifcr().write(|w| w.txtfc().set_bit());
         spi1.spi_cr1().modify(|_, w| w.spe().clear_bit());
 
-        // Enable USART2 TX DMA
-        while usart2.isr_enabled().read().tc().bit_is_clear() {}
-        usart2.icr().write(|w| w.tccf().set_bit());
-        gpdma1.c2cr().modify(|_, w| w.en().set_bit());
+        if gpdma1.c0sar().read().sa() == R_RX_PAYLOAD.as_ptr() as u32 + 33 {
+            // Enable USART2 TX DMA if payload was read
+            while usart2.isr_enabled().read().tc().bit_is_clear() {}
+            usart2.icr().write(|w| w.tccf().set_bit());
+            gpdma1.c2cr().modify(|_, w| w.en().set_bit());
+        } else if let Some(command) = commands.dequeue() {
+            send_command(command, gpdma1, spi1);
+        }
     }
 }
 
@@ -345,13 +263,10 @@ fn main() -> ! {
 
     // Enqueue initialization commands
     let commands = COMMANDS.get();
-    let _ = commands.enqueue(&R_RF_CH);
+    let _ = commands.enqueue(&W_RF_SETUP);
     let _ = commands.enqueue(&W_RX_ADDR_P0);
-    let _ = commands.enqueue(&R_RX_ADDR_P0);
     let _ = commands.enqueue(&W_RX_PW_P0);
-    let _ = commands.enqueue(&R_RX_PW_P0);
     let _ = commands.enqueue(&W_CONFIG);
-    let _ = commands.enqueue(&R_CONFIG);
 
     // USART2 TX DMA stream
     dp.GPDMA1
