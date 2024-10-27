@@ -2,3 +2,5 @@
 .#*
 .gdb_history
 target/
+*.svd
+register_viewer.py

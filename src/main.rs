@@ -16,6 +16,7 @@ const SPI1_RXDR: u32 = 0x4001_3030;
 const USART2_TDR: u32 = 0x4000_4428;
 
 // nRF24L01 command byte sequences
+// const NOP: [u8; 1] = commands::Nop::bytes();
 const W_RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(110)).bytes();
 const R_RF_CH: [u8; 2] = commands::RRegister::<registers::RfCh>::bytes();
 const W_RX_ADDR_P0: [u8; 6] =
@@ -164,51 +165,11 @@ fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
 //                 // NOP
 //                 send_command(&[commands::Nop::WORD], spi1, usart2, rx_buffer);
 //             }
-//             98 => {
-//                 // b
-//                 // Read RF_CH
-//                 send_command(
-//                     &commands::RRegister::<registers::RfCh>::bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             99 => {
-//                 // c
-//                 // Read RX Addr P0
-//                 send_command(
-//                     &commands::RRegister::<registers::RxAddrP0<5>>::bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             100 => {
-//                 // d
-//                 // Read Config
-//                 send_command(
-//                     &commands::RRegister::<registers::Config>::bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
 //             101 => {
 //                 // e
 //                 // Clear RX_DR flag
 //                 send_command(
 //                     &commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes(),
-//                     spi1,
-//                     usart2,
-//                     rx_buffer,
-//                 );
-//             }
-//             102 => {
-//                 // f
-//                 // Read pipe 0 payload width
-//                 send_command(
-//                     &commands::RRegister::<registers::RxPwP0>::bytes(),
 //                     spi1,
 //                     usart2,
 //                     rx_buffer,
@@ -282,6 +243,7 @@ fn EXTI1() {
 fn GPDMA1_CH1() {
     let gpdma1 = GPDMA1_PERIPHERAL.get();
     let spi1 = SPI1_PERIPHERAL.get();
+    let usart2 = USART2_PERIPHERAL.get();
 
     if gpdma1.c1sr().read().tcf().bit_is_set() {
         gpdma1.c1fcr().write(|w| w.tcf().set_bit());
@@ -291,6 +253,8 @@ fn GPDMA1_CH1() {
         spi1.spi_cr1().modify(|_, w| w.spe().clear_bit());
 
         // Enable USART2 TX DMA
+        while usart2.isr_enabled().read().tc().bit_is_clear() {}
+        usart2.icr().write(|w| w.tccf().set_bit());
         gpdma1.c2cr().modify(|_, w| w.en().set_bit());
     }
 }
@@ -300,15 +264,10 @@ fn GPDMA1_CH1() {
 fn GPDMA1_CH2() {
     let gpdma1 = GPDMA1_PERIPHERAL.get();
     let spi1 = SPI1_PERIPHERAL.get();
-    let usart2 = USART2_PERIPHERAL.get();
     let commands = COMMANDS.get();
 
     if gpdma1.c2sr().read().tcf().bit_is_set() {
         gpdma1.c2fcr().write(|w| w.tcf().set_bit());
-
-        // Reset USART2 flags
-        while usart2.isr_disabled().read().tc().bit_is_clear() {}
-        usart2.icr().write(|w| w.tccf().set_bit());
 
         // Send next command
         if let Some(command) = commands.dequeue() {
@@ -431,8 +390,8 @@ fn main() -> ! {
 
     // Enable USART, transmitter and receiver
     dp.USART2
-        .cr1_disabled()
-        .write(|w| w.re().set_bit().te().set_bit().ue().set_bit());
+        .cr1_enabled()
+        .write(|w| w.fifoen().set_bit().te().set_bit().ue().set_bit());
 
     // Set up EXTI line 1 interrupt for A1
     dp.EXTI.exticr1().write(|w| w.exti1().pa());
