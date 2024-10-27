@@ -117,7 +117,7 @@ fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
             .write(|w| unsafe { w.bits(SPI1_RX_BUFFER[1..].as_ptr() as u32) });
         gpdma1
             .c2br1()
-            .write(|w| unsafe { w.bndt().bits(transfer_size) });
+            .write(|w| unsafe { w.bndt().bits(32) });
     }
 
     // SPI1 TX: Re-configure destination address, transfer size
