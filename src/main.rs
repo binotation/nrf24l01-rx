@@ -47,7 +47,7 @@ impl<P> SyncPeripheral<P> {
     }
 
     #[allow(clippy::mut_from_ref)]
-    fn get(&self) -> &mut P {
+    const fn get(&self) -> &mut P {
         unsafe { &mut *self.0.get() }.as_mut().unwrap()
     }
 }
@@ -291,8 +291,8 @@ fn main() -> ! {
     dp.GPDMA1.c0tr2().write(|w| unsafe { w.reqsel().bits(7) });
     dp.GPDMA1.c0dar().write(|w| unsafe { w.bits(SPI1_TXDR) });
 
-    // USART2: Configure baud rate 9600
-    dp.USART2.brr().write(|w| unsafe { w.bits(417) }); // 4Mhz / 9600 approx. 417
+    // USART2: Configure baud rate 115200
+    dp.USART2.brr().write(|w| unsafe { w.bits(35) }); // 4Mhz / 115200 approx. 35
     dp.USART2.cr3().write(|w| w.dmat().set_bit());
 
     // SPI1: Enable DMA, set SPI master, enable hardware NSS
