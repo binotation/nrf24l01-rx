@@ -10,18 +10,19 @@ use nrf24l01_commands::{commands, registers};
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
 use stm32u5::stm32u575::{interrupt, Interrupt, Peripherals, EXTI, GPDMA1, GPIOA, SPI1, USART2};
 
-const RX_ADDR: u64 = 0xA2891FFF6A;
+const RX_ADDR: u64 = 0xA2891F;
 const SPI1_TXDR: u32 = 0x4001_3020;
 const SPI1_RXDR: u32 = 0x4001_3030;
 const USART2_TDR: u32 = 0x4000_4428;
 
 // nRF24L01 command byte sequences
 // const NOP: [u8; 1] = commands::Nop::bytes();
-const W_RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(110)).bytes();
+const W_RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(0)).bytes();
 const W_RF_SETUP: [u8; 2] =
     commands::WRegister(registers::RfSetup::new().with_rf_dr(false)).bytes();
-const W_RX_ADDR_P0: [u8; 6] =
-    commands::WRegister(registers::RxAddrP0::<5>::new().with_rx_addr_p0(RX_ADDR)).bytes();
+const W_SETUP_AW: [u8; 2] = commands::WRegister(registers::SetupAw::new().with_aw(1)).bytes();
+const W_RX_ADDR_P0: [u8; 4] =
+    commands::WRegister(registers::RxAddrP0::<3>::new().with_rx_addr_p0(RX_ADDR)).bytes();
 const W_RX_PW_P0: [u8; 2] = commands::WRegister(registers::RxPwP0::new().with_rx_pw_p0(32)).bytes();
 const W_CONFIG: [u8; 2] = commands::WRegister(
     registers::Config::new()
@@ -115,9 +116,7 @@ fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
         gpdma1
             .c2sar()
             .write(|w| unsafe { w.bits(SPI1_RX_BUFFER[1..].as_ptr() as u32) });
-        gpdma1
-            .c2br1()
-            .write(|w| unsafe { w.bndt().bits(32) });
+        gpdma1.c2br1().write(|w| unsafe { w.bndt().bits(32) });
     }
 
     // SPI1 TX: Re-configure destination address, transfer size
@@ -264,6 +263,7 @@ fn main() -> ! {
     // Enqueue initialization commands
     let commands = COMMANDS.get();
     let _ = commands.enqueue(&W_RF_SETUP);
+    let _ = commands.enqueue(&W_SETUP_AW);
     let _ = commands.enqueue(&W_RX_ADDR_P0);
     let _ = commands.enqueue(&W_RX_PW_P0);
     let _ = commands.enqueue(&W_CONFIG);
