@@ -129,21 +129,6 @@ fn send_command(command: &[u8], dp: &mut Peripherals) {
     dp.SPI1.spi_cr1().modify(|_, w| w.cstart().set_bit());
 }
 
-#[interrupt]
-fn EXTI1() {
-    let dp = DEVICE_PERIPHERALS.get();
-    let commands = COMMANDS.get();
-
-    if dp.EXTI.fpr1().read().fpif1().bit_is_set() {
-        unsafe {
-            commands.enqueue_unchecked(&W_RESET_RX_DR);
-        }
-        send_command(&R_RX_PAYLOAD, dp);
-
-        dp.EXTI.fpr1().write(|w| w.fpif1().clear_bit_by_one());
-    }
-}
-
 /// SPI1 RX DMA transfer complete
 #[interrupt]
 fn GPDMA1_CH1() {
@@ -167,6 +152,41 @@ fn GPDMA1_CH1() {
         if let Some(command) = commands.dequeue() {
             send_command(command, dp);
         }
+    }
+}
+
+#[interrupt]
+fn USART2() {
+    let dp = DEVICE_PERIPHERALS.get();
+
+    if dp.USART2.isr_enabled().read().rxfne().bit_is_set() {
+        let received_byte = dp.USART2.rdr().read().rdr().bits();
+        match received_byte {
+            // Turn receiver OFF
+            48 => dp.GPIOA.bsrr().write(|w| w.br0().set_bit()),
+            // Turn receiver ON
+            49 => dp.GPIOA.bsrr().write(|w| w.bs0().set_bit()),
+            _ => (),
+        }
+    }
+    if dp.USART2.isr_enabled().read().ore().bit_is_set() {
+        dp.USART2.icr().write(|w| w.orecf().set_bit());
+    }
+}
+
+/// IRQ - RX_DS interrupt asserted
+#[interrupt]
+fn EXTI1() {
+    let dp = DEVICE_PERIPHERALS.get();
+    let commands = COMMANDS.get();
+
+    if dp.EXTI.fpr1().read().fpif1().bit_is_set() {
+        unsafe {
+            commands.enqueue_unchecked(&W_RESET_RX_DR);
+        }
+        send_command(&R_RX_PAYLOAD, dp);
+
+        dp.EXTI.fpr1().write(|w| w.fpif1().clear_bit_by_one());
     }
 }
 
@@ -215,13 +235,7 @@ fn main() -> ! {
         .pupdr()
         .write(|w| w.pupd1().pull_up().pupd4().pull_up());
     dp.GPIOA.ospeedr().write(|w| {
-        w.ospeed2()
-            .medium_speed()
-            .ospeed3()
-            .medium_speed()
-            .ospeed4()
-            .medium_speed()
-            .ospeed5()
+        w.ospeed5()
             .medium_speed()
             .ospeed6()
             .medium_speed()
@@ -288,9 +302,18 @@ fn main() -> ! {
         .write(|w| w.ssoe().set_bit().master().set_bit());
 
     // Enable USART, transmitter and receiver
-    dp.USART2
-        .cr1_enabled()
-        .write(|w| w.fifoen().set_bit().te().set_bit().ue().set_bit());
+    dp.USART2.cr1_enabled().write(|w| {
+        w.fifoen()
+            .set_bit()
+            .rxfneie()
+            .set_bit()
+            .re()
+            .set_bit()
+            .te()
+            .set_bit()
+            .ue()
+            .set_bit()
+    });
 
     // Set up EXTI line 1 interrupt for A1
     dp.EXTI.exticr1().write(|w| w.exti1().pa());
@@ -300,6 +323,7 @@ fn main() -> ! {
     DEVICE_PERIPHERALS.set(dp);
     unsafe {
         // Unmask NVIC global interrupts
+        cortex_m::peripheral::NVIC::unmask(Interrupt::USART2);
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::GPDMA1_CH1);
     }
@@ -308,8 +332,6 @@ fn main() -> ! {
     let dp = DEVICE_PERIPHERALS.get();
 
     send_command(&W_RF_CH, dp);
-
-    dp.GPIOA.bsrr().write(|w| w.bs0().set_bit());
 
     loop {
         asm::wfi();
