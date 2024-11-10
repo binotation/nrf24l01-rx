@@ -4,11 +4,12 @@
 #![no_main]
 
 use core::cell::UnsafeCell;
+use cortex_m::asm;
 use cortex_m_rt::entry;
 use heapless::spsc::Queue;
 use nrf24l01_commands::{commands, registers};
 use panic_semihosting as _; // logs messages to the host stderr; requires a debugger
-use stm32u5::stm32u575::{interrupt, Interrupt, Peripherals, EXTI, GPDMA1, GPIOA, SPI1, USART2};
+use stm32u5::stm32u575::{interrupt, Interrupt, Peripherals};
 
 const RX_ADDR: u64 = 0xA2891F;
 const SPI1_TXDR: u32 = 0x4001_3020;
@@ -55,17 +56,9 @@ impl<P> SyncPeripheral<P> {
 
 // SAFETY: CPU is single-threaded. Interrupts cannot execute simultaneously and cannot
 // preempt each other (all interrupts have same priority).
-unsafe impl Sync for SyncPeripheral<GPIOA> {}
-unsafe impl Sync for SyncPeripheral<USART2> {}
-unsafe impl Sync for SyncPeripheral<SPI1> {}
-unsafe impl Sync for SyncPeripheral<EXTI> {}
-unsafe impl Sync for SyncPeripheral<GPDMA1> {}
+unsafe impl Sync for SyncPeripheral<Peripherals> {}
 
-static GPIOA_PERIPHERAL: SyncPeripheral<GPIOA> = SyncPeripheral::new();
-static USART2_PERIPHERAL: SyncPeripheral<USART2> = SyncPeripheral::new();
-static SPI1_PERIPHERAL: SyncPeripheral<SPI1> = SyncPeripheral::new();
-static EXTI_PERIPHERAL: SyncPeripheral<EXTI> = SyncPeripheral::new();
-static GPDMA1_PERIPHERAL: SyncPeripheral<GPDMA1> = SyncPeripheral::new();
+static DEVICE_PERIPHERALS: SyncPeripheral<Peripherals> = SyncPeripheral::new();
 
 struct SyncQueue<T, const N: usize>(UnsafeCell<Queue<T, N>>);
 
@@ -79,14 +72,14 @@ impl<T, const N: usize> SyncQueue<T, N> {
         unsafe { &mut *self.0.get() }
     }
 }
-unsafe impl Sync for SyncQueue<&[u8], 16> {}
+unsafe impl Sync for SyncQueue<&[u8], 8> {}
 
 /// Queue of commands
-static COMMANDS: SyncQueue<&[u8], 16> = SyncQueue::new();
+static COMMANDS: SyncQueue<&[u8], 8> = SyncQueue::new();
 /// Byte buffer for SPI1 RX
 static mut SPI1_RX_BUFFER: [u8; 33] = [0; 33];
 
-fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
+fn send_command(command: &[u8], dp: &mut Peripherals) {
     /* SPI Transmit procedure:
        TSIZE must be written before SPE=1, p.2924: SPI must be disabled while changing TSIZE
        SPE=1
@@ -102,93 +95,77 @@ fn send_command(command: &[u8], gpdma1: &mut GPDMA1, spi1: &mut SPI1) {
 
     // SPI1 RX: Re-configure destination address, transfer size
     #[allow(static_mut_refs)]
-    gpdma1
+    dp.GPDMA1
         .c1dar()
         .write(|w| unsafe { w.bits(SPI1_RX_BUFFER.as_ptr() as u32) });
-    gpdma1
+    dp.GPDMA1
         .c1br1()
         .write(|w| unsafe { w.bndt().bits(transfer_size) });
-    gpdma1.c1cr().modify(|_, w| w.en().set_bit());
+    dp.GPDMA1.c1cr().modify(|_, w| w.en().set_bit());
 
     // USART2 TX: Re-configure source address, transfer size
     if command == R_RX_PAYLOAD {
         #[allow(static_mut_refs)]
-        gpdma1
+        dp.GPDMA1
             .c2sar()
             .write(|w| unsafe { w.bits(SPI1_RX_BUFFER[1..].as_ptr() as u32) });
-        gpdma1.c2br1().write(|w| unsafe { w.bndt().bits(32) });
+        dp.GPDMA1.c2br1().write(|w| unsafe { w.bndt().bits(32) });
     }
 
     // SPI1 TX: Re-configure destination address, transfer size
-    gpdma1
+    dp.GPDMA1
         .c0sar()
         .write(|w| unsafe { w.bits(command.as_ptr() as u32) });
-    gpdma1
+    dp.GPDMA1
         .c0br1()
         .write(|w| unsafe { w.bndt().bits(transfer_size) });
-    gpdma1.c0cr().write(|w| w.en().set_bit());
+    dp.GPDMA1.c0cr().write(|w| w.en().set_bit());
 
     // Enable SPI
-    spi1.spi_cr2()
+    dp.SPI1
+        .spi_cr2()
         .write(|w| unsafe { w.tsize().bits(transfer_size) });
-    spi1.spi_cr1().modify(|_, w| w.spe().set_bit());
-    spi1.spi_cr1().modify(|_, w| w.cstart().set_bit());
+    dp.SPI1.spi_cr1().modify(|_, w| w.spe().set_bit());
+    dp.SPI1.spi_cr1().modify(|_, w| w.cstart().set_bit());
 }
 
 #[interrupt]
 fn EXTI1() {
-    let gpdma1 = GPDMA1_PERIPHERAL.get();
-    let spi1 = SPI1_PERIPHERAL.get();
-    let exti = EXTI_PERIPHERAL.get();
+    let dp = DEVICE_PERIPHERALS.get();
     let commands = COMMANDS.get();
 
-    if exti.fpr1().read().fpif1().bit_is_set() {
-        let _ = commands.enqueue(&W_RESET_RX_DR);
-        send_command(&R_RX_PAYLOAD, gpdma1, spi1);
+    if dp.EXTI.fpr1().read().fpif1().bit_is_set() {
+        unsafe {
+            commands.enqueue_unchecked(&W_RESET_RX_DR);
+        }
+        send_command(&R_RX_PAYLOAD, dp);
 
-        exti.fpr1().write(|w| w.fpif1().clear_bit_by_one());
+        dp.EXTI.fpr1().write(|w| w.fpif1().clear_bit_by_one());
     }
 }
 
 /// SPI1 RX DMA transfer complete
 #[interrupt]
 fn GPDMA1_CH1() {
-    let gpdma1 = GPDMA1_PERIPHERAL.get();
-    let spi1 = SPI1_PERIPHERAL.get();
-    let usart2 = USART2_PERIPHERAL.get();
+    let dp = DEVICE_PERIPHERALS.get();
     let commands = COMMANDS.get();
 
-    if gpdma1.c1sr().read().tcf().bit_is_set() {
-        gpdma1.c1fcr().write(|w| w.tcf().set_bit());
+    if dp.GPDMA1.c1sr().read().tcf().bit_is_set() {
+        dp.GPDMA1.c1fcr().write(|w| w.tcf().set_bit());
 
         // Reset SPI flags
-        spi1.spi_ifcr().write(|w| w.txtfc().set_bit());
-        spi1.spi_cr1().modify(|_, w| w.spe().clear_bit());
+        dp.SPI1.spi_ifcr().write(|w| w.txtfc().set_bit());
+        dp.SPI1.spi_cr1().modify(|_, w| w.spe().clear_bit());
 
-        if gpdma1.c0sar().read().sa() == R_RX_PAYLOAD.as_ptr() as u32 + 33 {
+        // USART transaction will complete before next payload is received
+        if dp.GPDMA1.c0sar().read().sa() == R_RX_PAYLOAD.as_ptr() as u32 + 33 {
             // Enable USART2 TX DMA if payload was read
-            while usart2.isr_enabled().read().tc().bit_is_clear() {}
-            usart2.icr().write(|w| w.tccf().set_bit());
-            gpdma1.c2cr().modify(|_, w| w.en().set_bit());
-        } else if let Some(command) = commands.dequeue() {
-            send_command(command, gpdma1, spi1);
+            while dp.USART2.isr_enabled().read().tc().bit_is_clear() {}
+            dp.USART2.icr().write(|w| w.tccf().set_bit());
+            dp.GPDMA1.c2cr().modify(|_, w| w.en().set_bit());
         }
-    }
-}
-
-/// USART2 TX DMA transfer complete
-#[interrupt]
-fn GPDMA1_CH2() {
-    let gpdma1 = GPDMA1_PERIPHERAL.get();
-    let spi1 = SPI1_PERIPHERAL.get();
-    let commands = COMMANDS.get();
-
-    if gpdma1.c2sr().read().tcf().bit_is_set() {
-        gpdma1.c2fcr().write(|w| w.tcf().set_bit());
-
-        // Send next command
         if let Some(command) = commands.dequeue() {
-            send_command(command, gpdma1, spi1);
+            send_command(command, dp);
         }
     }
 }
@@ -197,7 +174,13 @@ fn GPDMA1_CH2() {
 fn main() -> ! {
     // Device defaults to 4MHz clock
 
+    let cp = cortex_m::Peripherals::take().unwrap();
     let dp = Peripherals::take().unwrap();
+
+    unsafe {
+        // Set SLEEPONEXIT
+        cp.SCB.scr.write(0b10);
+    }
 
     // Enable peripheral clocks - GPDMA1, GPIOA, USART2, SPI1
     dp.RCC.ahb1enr().write(|w| w.gpdma1en().set_bit());
@@ -262,11 +245,13 @@ fn main() -> ! {
 
     // Enqueue initialization commands
     let commands = COMMANDS.get();
-    let _ = commands.enqueue(&W_RF_SETUP);
-    let _ = commands.enqueue(&W_SETUP_AW);
-    let _ = commands.enqueue(&W_RX_ADDR_P0);
-    let _ = commands.enqueue(&W_RX_PW_P0);
-    let _ = commands.enqueue(&W_CONFIG);
+    unsafe {
+        commands.enqueue_unchecked(&W_RF_SETUP);
+        commands.enqueue_unchecked(&W_SETUP_AW);
+        commands.enqueue_unchecked(&W_RX_ADDR_P0);
+        commands.enqueue_unchecked(&W_RX_PW_P0);
+        commands.enqueue_unchecked(&W_CONFIG);
+    }
 
     // USART2 TX DMA stream
     dp.GPDMA1
@@ -274,7 +259,6 @@ fn main() -> ! {
         .write(|w| w.sap().set_bit().sinc().set_bit());
     dp.GPDMA1.c2tr2().write(|w| unsafe { w.reqsel().bits(27) });
     dp.GPDMA1.c2dar().write(|w| unsafe { w.bits(USART2_TDR) });
-    dp.GPDMA1.c2cr().write(|w| w.tcie().set_bit());
 
     // SPI1 RX DMA stream
     dp.GPDMA1
@@ -313,27 +297,21 @@ fn main() -> ! {
     dp.EXTI.ftsr1().write(|w| w.ft1().set_bit());
     dp.EXTI.imr1().write(|w| w.im1().set_bit());
 
-    GPDMA1_PERIPHERAL.set(dp.GPDMA1);
-    GPIOA_PERIPHERAL.set(dp.GPIOA);
-    SPI1_PERIPHERAL.set(dp.SPI1);
-    USART2_PERIPHERAL.set(dp.USART2);
-    EXTI_PERIPHERAL.set(dp.EXTI);
+    DEVICE_PERIPHERALS.set(dp);
     unsafe {
         // Unmask NVIC global interrupts
         cortex_m::peripheral::NVIC::unmask(Interrupt::EXTI1);
         cortex_m::peripheral::NVIC::unmask(Interrupt::GPDMA1_CH1);
-        cortex_m::peripheral::NVIC::unmask(Interrupt::GPDMA1_CH2);
     }
 
     // Begin transfer for initial command
-    let gpdma1 = GPDMA1_PERIPHERAL.get();
-    let spi1 = SPI1_PERIPHERAL.get();
-    let gpioa = GPIOA_PERIPHERAL.get();
+    let dp = DEVICE_PERIPHERALS.get();
 
-    send_command(&W_RF_CH, gpdma1, spi1);
+    send_command(&W_RF_CH, dp);
 
-    gpioa.bsrr().write(|w| w.bs0().set_bit());
+    dp.GPIOA.bsrr().write(|w| w.bs0().set_bit());
 
-    #[allow(clippy::empty_loop)]
-    loop {}
+    loop {
+        asm::wfi();
+    }
 }
