@@ -17,15 +17,15 @@ const SPI1_RXDR: u32 = 0x4001_3030;
 const USART2_TDR: u32 = 0x4000_4428;
 
 // nRF24L01 command byte sequences
-// const NOP: [u8; 1] = commands::Nop::bytes();
-const W_RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(0)).bytes();
-const W_RF_SETUP: [u8; 2] =
-    commands::WRegister(registers::RfSetup::new().with_rf_dr(false)).bytes();
-const W_SETUP_AW: [u8; 2] = commands::WRegister(registers::SetupAw::new().with_aw(1)).bytes();
-const W_RX_ADDR_P0: [u8; 4] =
+const SETUP_AW: [u8; 2] = commands::WRegister(registers::SetupAw::new().with_aw(1)).bytes();
+const RF_CH: [u8; 2] = commands::WRegister(registers::RfCh::new().with_rf_ch(0)).bytes();
+const RF_SETUP: [u8; 2] = commands::WRegister(registers::RfSetup::new().with_rf_dr(false)).bytes();
+const RX_ADDR_P0: [u8; 4] =
     commands::WRegister(registers::RxAddrP0::<3>::new().with_rx_addr_p0(RX_ADDR)).bytes();
-const W_RX_PW_P0: [u8; 2] = commands::WRegister(registers::RxPwP0::new().with_rx_pw_p0(32)).bytes();
-const W_CONFIG: [u8; 2] = commands::WRegister(
+const ACTIVATE: [u8; 2] = commands::Activate::bytes();
+const FEATURE: [u8; 2] = commands::WRegister(registers::Feature::new().with_en_dpl(true)).bytes();
+const DYNPD: [u8; 2] = commands::WRegister(registers::Dynpd::new().with_dpl_p0(true)).bytes();
+const CONFIG: [u8; 2] = commands::WRegister(
     registers::Config::new()
         .with_prim_rx(true)
         .with_pwr_up(true)
@@ -33,9 +33,11 @@ const W_CONFIG: [u8; 2] = commands::WRegister(
         .with_mask_tx_ds(true),
 )
 .bytes();
+const R_RX_PL_WID: [u8; 2] = commands::RRxPlWid::bytes();
 const R_RX_PAYLOAD: [u8; 33] = commands::RRxPayload::<32>::bytes();
-const W_RESET_RX_DR: [u8; 2] =
-    commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes();
+const R_HANDSHAKE: [u8; 2] = commands::RRxPayload::<1>::bytes();
+const FLUSH_RX: [u8; 1] = commands::FlushRx::bytes();
+const RESET_RX_DR: [u8; 2] = commands::WRegister(registers::Status::new().with_rx_dr(true)).bytes();
 
 struct SyncPeripheral<P>(UnsafeCell<Option<P>>);
 
@@ -143,11 +145,21 @@ fn GPDMA1_CH1() {
         dp.SPI1.spi_cr1().modify(|_, w| w.spe().clear_bit());
 
         // USART transaction will complete before next payload is received
-        if dp.GPDMA1.c0sar().read().sa() == R_RX_PAYLOAD.as_ptr() as u32 + 33 {
+        if dp.GPDMA1.c0sar().read().sa() == R_RX_PAYLOAD.as_ptr() as u32 + R_RX_PAYLOAD.len() as u32
+        {
             // Enable USART2 TX DMA if payload was read
             while dp.USART2.isr_enabled().read().tc().bit_is_clear() {}
             dp.USART2.icr().write(|w| w.tccf().set_bit());
             dp.GPDMA1.c2cr().modify(|_, w| w.en().set_bit());
+        } else if dp.GPDMA1.c0sar().read().sa()
+            == R_RX_PL_WID.as_ptr() as u32 + R_RX_PL_WID.len() as u32
+        {
+            let payload_width = unsafe { SPI1_RX_BUFFER[1] };
+            if payload_width == 32 {
+                send_command(&R_RX_PAYLOAD, dp);
+            } else if payload_width == 1 {
+                send_command(&R_HANDSHAKE, dp);
+            }
         }
         if let Some(command) = commands.dequeue() {
             send_command(command, dp);
@@ -163,9 +175,14 @@ fn USART2() {
         let received_byte = dp.USART2.rdr().read().rdr().bits();
         match received_byte {
             // Turn receiver OFF
-            48 => dp.GPIOA.bsrr().write(|w| w.br0().set_bit()),
+            48 => {
+                dp.GPIOA.bsrr().write(|w| w.br0().set_bit());
+                send_command(&FLUSH_RX, dp);
+            }
             // Turn receiver ON
-            49 => dp.GPIOA.bsrr().write(|w| w.bs0().set_bit()),
+            49 => {
+                dp.GPIOA.bsrr().write(|w| w.bs0().set_bit());
+            }
             _ => (),
         }
     }
@@ -182,9 +199,9 @@ fn EXTI1() {
 
     if dp.EXTI.fpr1().read().fpif1().bit_is_set() {
         unsafe {
-            commands.enqueue_unchecked(&W_RESET_RX_DR);
+            commands.enqueue_unchecked(&R_RX_PL_WID);
         }
-        send_command(&R_RX_PAYLOAD, dp);
+        send_command(&RESET_RX_DR, dp);
 
         dp.EXTI.fpr1().write(|w| w.fpif1().clear_bit_by_one());
     }
@@ -260,11 +277,13 @@ fn main() -> ! {
     // Enqueue initialization commands
     let commands = COMMANDS.get();
     unsafe {
-        commands.enqueue_unchecked(&W_RF_SETUP);
-        commands.enqueue_unchecked(&W_SETUP_AW);
-        commands.enqueue_unchecked(&W_RX_ADDR_P0);
-        commands.enqueue_unchecked(&W_RX_PW_P0);
-        commands.enqueue_unchecked(&W_CONFIG);
+        commands.enqueue_unchecked(&RF_CH);
+        commands.enqueue_unchecked(&RF_SETUP);
+        commands.enqueue_unchecked(&RX_ADDR_P0);
+        commands.enqueue_unchecked(&ACTIVATE);
+        commands.enqueue_unchecked(&FEATURE);
+        commands.enqueue_unchecked(&DYNPD);
+        commands.enqueue_unchecked(&CONFIG);
     }
 
     // USART2 TX DMA stream
@@ -331,7 +350,7 @@ fn main() -> ! {
     // Begin transfer for initial command
     let dp = DEVICE_PERIPHERALS.get();
 
-    send_command(&W_RF_CH, dp);
+    send_command(&SETUP_AW, dp);
 
     loop {
         asm::wfi();
