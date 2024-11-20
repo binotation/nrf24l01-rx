@@ -128,9 +128,9 @@ checksum = "8d5439c4ad607c3c23abf66de8c8bf57ba8adcd1f129e699851a6e43935d339d"
 
 [[package]]
 name = "nrf24l01-commands"
-version = "1.0.2"
+version = "1.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e356317150125a54f28f10e488035ddba7dc81a195776adaf370953494dd483"
+checksum = "35fec4fedfd1a30cc91dc45bf2cb3178df2f4bae594e5eb4b7a814d143cac1e4"
 dependencies = [
  "bitfield-struct",
 ]
